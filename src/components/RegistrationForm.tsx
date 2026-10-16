@@ -72,7 +72,7 @@ export default function RegistrationForm() {
     isSubmittingRef.current = true;
 
     // Synchronously unlock AudioContext during the user's submit gesture
-    audioController.unlockOnUserGesture();
+    await audioController.unlockOnUserGesture();
 
     setLoading(true);
     setErrorMsg(null);

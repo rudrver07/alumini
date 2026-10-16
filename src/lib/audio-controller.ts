@@ -15,6 +15,7 @@ import { EVENT_CONFIG } from '@/config/event.config';
 class RegistrationAudioController {
   private audioContext: AudioContext | null = null;
   private audioBuffer: AudioBuffer | null = null;
+  private rawArrayBuffer: ArrayBuffer | null = null;
   private activeSourceNode: AudioBufferSourceNode | null = null;
   private fallbackAudio: HTMLAudioElement | null = null;
   private isPreloaded = false;
@@ -29,7 +30,7 @@ class RegistrationAudioController {
   private getAudioContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;
 
-    if (!this.audioContext) {
+    if (!this.audioContext || this.audioContext.state === 'closed') {
       const AudioCtx =
         window.AudioContext ||
         (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
@@ -51,7 +52,8 @@ class RegistrationAudioController {
 
     this.isPreloading = true;
     try {
-      const res = await fetch(EVENT_CONFIG.registrationSuccessAudioPath, {
+      const audioUrl = EVENT_CONFIG.registrationSuccessAudioPath || '/audio/registration-success.wav';
+      const res = await fetch(audioUrl, {
         method: 'GET',
         cache: 'force-cache',
       });
@@ -61,21 +63,34 @@ class RegistrationAudioController {
       }
 
       const arrayBuffer = await res.arrayBuffer();
-      const ctx = this.getAudioContext();
+      this.rawArrayBuffer = arrayBuffer.slice(0); // preserve raw copy
 
+      const ctx = this.getAudioContext();
       if (ctx) {
-        this.audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+        try {
+          this.audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+          if (process.env.NODE_ENV !== 'production') {
+            console.log(
+              `[AudioDiagnostics] Audio preloaded successfully: duration=${this.audioBuffer.duration.toFixed(2)}s, sampleRate=${this.audioBuffer.sampleRate}Hz`
+            );
+          }
+        } catch (decodeErr) {
+          console.warn('[AudioDiagnostics] Web Audio decode warning (will retry on unlock):', decodeErr);
+        }
       }
 
       // Also prepare fallback HTMLAudioElement
-      this.fallbackAudio = new Audio(EVENT_CONFIG.registrationSuccessAudioPath);
-      this.fallbackAudio.preload = 'auto';
-      this.fallbackAudio.loop = false;
+      if (!this.fallbackAudio) {
+        this.fallbackAudio = new Audio(audioUrl);
+        this.fallbackAudio.preload = 'auto';
+        this.fallbackAudio.loop = false;
+        this.fallbackAudio.load();
+      }
 
       this.isPreloaded = true;
       return true;
     } catch (err) {
-      console.warn('[AudioController] Audio preloading notice:', err);
+      console.warn('[AudioDiagnostics] Preload notice:', err);
       return false;
     } finally {
       this.isPreloading = false;
@@ -86,28 +101,57 @@ class RegistrationAudioController {
    * Unlocks the AudioContext synchronously within a direct user gesture (e.g. clicking Submit).
    * Prevents browser autoplay policy rejection when awaiting async database persistence.
    */
-  unlockOnUserGesture(): void {
+  async unlockOnUserGesture(): Promise<void> {
     if (typeof window === 'undefined') return;
 
     try {
       const ctx = this.getAudioContext();
-      if (ctx && ctx.state === 'suspended') {
-        ctx.resume().catch(() => {});
+      if (ctx) {
+        if (ctx.state === 'suspended') {
+          await ctx.resume();
+        }
+
+        // Decode audio buffer if not yet decoded
+        if (!this.audioBuffer && this.rawArrayBuffer) {
+          try {
+            this.audioBuffer = await ctx.decodeAudioData(this.rawArrayBuffer.slice(0));
+          } catch (e) {
+            console.warn('[AudioDiagnostics] Decode on gesture error:', e);
+          }
+        }
+
+        // Prime audio pipeline with a silent 1-sample buffer to bind hardware
+        try {
+          const silentBuffer = ctx.createBuffer(1, 1, 22050);
+          const source = ctx.createBufferSource();
+          source.buffer = silentBuffer;
+          source.connect(ctx.destination);
+          source.start(0);
+        } catch {
+          // Ignore silent buffer failure
+        }
+
+        if (process.env.NODE_ENV !== 'production') {
+          console.log(`[AudioDiagnostics] AudioContext state on gesture: ${ctx.state}`);
+        }
       }
 
-      // Pre-warm fallback audio element silently
+      // Warm up fallback HTMLAudioElement
+      const audioUrl = EVENT_CONFIG.registrationSuccessAudioPath || '/audio/registration-success.wav';
       if (!this.fallbackAudio) {
-        this.fallbackAudio = new Audio(EVENT_CONFIG.registrationSuccessAudioPath);
+        this.fallbackAudio = new Audio(audioUrl);
+        this.fallbackAudio.preload = 'auto';
         this.fallbackAudio.loop = false;
       }
-    } catch {
-      // Ignore synchronous unlock errors
+      this.fallbackAudio.load();
+    } catch (err) {
+      console.warn('[AudioDiagnostics] Unlock gesture notice:', err);
     }
   }
 
   /**
    * Plays the confirmation voice recording exactly once for a confirmed registration ID.
-   * Guarded by sessionStorage and active state.
+   * Guarded by in-memory Set and sessionStorage.
    */
   async playRegistrationConfirmation(
     registrationId: string
@@ -118,7 +162,10 @@ class RegistrationAudioController {
 
     // 1. Check if already played in the current browser session
     const storageKey = `illum_audio_played_${registrationId}`;
-    if (this.playedIds.has(registrationId) || (typeof window !== 'undefined' && sessionStorage.getItem(storageKey))) {
+    if (this.playedIds.has(registrationId) || sessionStorage.getItem(storageKey)) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`[AudioDiagnostics] Skipping duplicate playback for ID: ${registrationId}`);
+      }
       return { success: false, blocked: false, reason: 'already_played' };
     }
 
@@ -140,42 +187,63 @@ class RegistrationAudioController {
 
     const ctx = this.getAudioContext();
 
-    // 2. Try Web Audio API playback
-    if (ctx && this.audioBuffer) {
+    // 2. Try Web Audio API playback (Running AudioContext is immune to async activation expiry)
+    if (ctx) {
       try {
         if (ctx.state === 'suspended') {
           await ctx.resume();
         }
 
-        const source = ctx.createBufferSource();
-        source.buffer = this.audioBuffer;
-        source.loop = false;
+        // If audioBuffer is not yet decoded, decode from raw array buffer or fetch now
+        if (!this.audioBuffer) {
+          if (this.rawArrayBuffer) {
+            this.audioBuffer = await ctx.decodeAudioData(this.rawArrayBuffer.slice(0));
+          } else {
+            const audioUrl = EVENT_CONFIG.registrationSuccessAudioPath || '/audio/registration-success.wav';
+            const res = await fetch(audioUrl);
+            const ab = await res.arrayBuffer();
+            this.rawArrayBuffer = ab.slice(0);
+            this.audioBuffer = await ctx.decodeAudioData(ab);
+          }
+        }
 
-        const gainNode = ctx.createGain();
-        gainNode.gain.value = 1.0;
+        if (this.audioBuffer && ctx.state === 'running') {
+          const source = ctx.createBufferSource();
+          source.buffer = this.audioBuffer;
+          source.loop = false;
 
-        source.connect(gainNode);
-        gainNode.connect(ctx.destination);
+          const gainNode = ctx.createGain();
+          gainNode.gain.value = 1.0;
 
-        source.onended = () => {
-          this.activeSourceNode = null;
-          this.currentlyPlayingId = null;
-          window.dispatchEvent(new CustomEvent('illuminate:voice-playback-end', { detail: { registrationId } }));
-        };
+          source.connect(gainNode);
+          gainNode.connect(ctx.destination);
 
-        source.start(0);
-        this.activeSourceNode = source;
+          source.onended = () => {
+            this.activeSourceNode = null;
+            this.currentlyPlayingId = null;
+            window.dispatchEvent(new CustomEvent('illuminate:voice-playback-end', { detail: { registrationId } }));
+          };
 
-        return { success: true, blocked: false };
+          source.start(0);
+          this.activeSourceNode = source;
+
+          if (process.env.NODE_ENV !== 'production') {
+            console.log(`[AudioDiagnostics] Confirmation voice playing via Web Audio API for ID: ${registrationId}`);
+          }
+
+          return { success: true, blocked: false };
+        }
       } catch (err) {
-        console.warn('[AudioController] Web Audio playback failed, falling back to HTMLAudio:', err);
+        console.warn('[AudioDiagnostics] Web Audio playback failed, falling back to HTMLAudio:', err);
       }
     }
 
     // 3. Fallback to HTMLAudioElement
     try {
+      const audioUrl = EVENT_CONFIG.registrationSuccessAudioPath || '/audio/registration-success.wav';
       if (!this.fallbackAudio) {
-        this.fallbackAudio = new Audio(EVENT_CONFIG.registrationSuccessAudioPath);
+        this.fallbackAudio = new Audio(audioUrl);
+        this.fallbackAudio.preload = 'auto';
         this.fallbackAudio.loop = false;
       }
 
@@ -193,16 +261,20 @@ class RegistrationAudioController {
         await playPromise;
       }
 
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`[AudioDiagnostics] Confirmation voice playing via HTMLAudio for ID: ${registrationId}`);
+      }
+
       return { success: true, blocked: false };
     } catch (err) {
-      console.warn('[AudioController] HTMLAudio playback blocked by browser:', err);
+      console.warn('[AudioDiagnostics] Autoplay restricted by browser policy:', err);
       window.dispatchEvent(new CustomEvent('illuminate:voice-playback-blocked', { detail: { registrationId } }));
       return { success: false, blocked: true, reason: 'browser_autoplay_blocked' };
     }
   }
 
   /**
-   * Manual play triggered by participant tap on "Tap to hear confirmation" button.
+   * Manual play triggered by participant tap on "Play confirmation audio" button.
    */
   async playManualFallback(
     registrationId: string
@@ -217,37 +289,48 @@ class RegistrationAudioController {
 
     try {
       const ctx = this.getAudioContext();
-      if (ctx && ctx.state === 'suspended') {
-        await ctx.resume();
+      if (ctx) {
+        if (ctx.state === 'suspended') {
+          await ctx.resume();
+        }
+
+        if (!this.audioBuffer && this.rawArrayBuffer) {
+          try {
+            this.audioBuffer = await ctx.decodeAudioData(this.rawArrayBuffer.slice(0));
+          } catch {}
+        }
+
+        if (this.audioBuffer) {
+          const source = ctx.createBufferSource();
+          source.buffer = this.audioBuffer;
+          source.loop = false;
+          source.connect(ctx.destination);
+          source.onended = () => {
+            this.activeSourceNode = null;
+            this.currentlyPlayingId = null;
+            window.dispatchEvent(new CustomEvent('illuminate:voice-playback-end', { detail: { registrationId } }));
+          };
+          source.start(0);
+          this.activeSourceNode = source;
+          return { success: true, blocked: false };
+        }
       }
 
-      if (ctx && this.audioBuffer) {
-        const source = ctx.createBufferSource();
-        source.buffer = this.audioBuffer;
-        source.loop = false;
-        source.connect(ctx.destination);
-        source.onended = () => {
-          this.activeSourceNode = null;
-          window.dispatchEvent(new CustomEvent('illuminate:voice-playback-end', { detail: { registrationId } }));
-        };
-        source.start(0);
-        this.activeSourceNode = source;
-        return { success: true, blocked: false };
-      }
-
+      const audioUrl = EVENT_CONFIG.registrationSuccessAudioPath || '/audio/registration-success.wav';
       if (!this.fallbackAudio) {
-        this.fallbackAudio = new Audio(EVENT_CONFIG.registrationSuccessAudioPath);
+        this.fallbackAudio = new Audio(audioUrl);
       }
       this.fallbackAudio.currentTime = 0;
       this.fallbackAudio.loop = false;
       this.fallbackAudio.volume = 1.0;
       this.fallbackAudio.onended = () => {
+        this.currentlyPlayingId = null;
         window.dispatchEvent(new CustomEvent('illuminate:voice-playback-end', { detail: { registrationId } }));
       };
       await this.fallbackAudio.play();
       return { success: true, blocked: false };
     } catch (err) {
-      console.warn('[AudioController] Manual play error:', err);
+      console.warn('[AudioDiagnostics] Manual play error:', err);
       return { success: false, blocked: true };
     }
   }
