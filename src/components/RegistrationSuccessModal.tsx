@@ -24,7 +24,7 @@ export default function RegistrationSuccessModal({
   const hasTriggeredRef = useRef(false);
 
   // Exact attached sound file path
-  const audioSrc = '/registration.wav';
+  const audioSrc = '/audio/registration-success.wav';
 
   // Ensure client-side portal mounting and lock background body scroll
   useEffect(() => {
@@ -219,7 +219,7 @@ export default function RegistrationSuccessModal({
               className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-900/90 border border-red-500/50 text-red-300 hover:text-white hover:border-red-500 text-xs font-semibold transition shadow-md cursor-pointer disabled:opacity-50"
             >
               <Volume2 className="w-3.5 h-3.5 text-red-400 animate-pulse" />
-              {isPlayingManual ? 'Playing voice confirmation...' : 'Tap to hear confirmation'}
+              {isPlayingManual ? 'Playing confirmation audio...' : 'Play confirmation audio'}
             </button>
           </div>
         )}

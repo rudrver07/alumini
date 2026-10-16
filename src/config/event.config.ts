@@ -35,7 +35,7 @@ export const EVENT_CONFIG: EventConfig = {
   feeStatusNote: 'Special updated participation fee (pending organizer confirmation; baseline brochure fee ₹799 preserved for historical reference).',
   brochureOriginalFee: 799,
   audioPath: '/audio/ambient-theme.wav',
-  registrationSuccessAudioPath: '/registration.wav',
+  registrationSuccessAudioPath: '/audio/registration-success.wav',
   contacts: [
     {
       name: 'Rachit Kumar',
