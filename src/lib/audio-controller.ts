@@ -20,6 +20,7 @@ class RegistrationAudioController {
   private isPreloaded = false;
   private isPreloading = false;
   private currentlyPlayingId: string | null = null;
+  private playedIds = new Set<string>();
 
   constructor() {
     // Lazy initialized on client
@@ -117,14 +118,15 @@ class RegistrationAudioController {
 
     // 1. Check if already played in the current browser session
     const storageKey = `illum_audio_played_${registrationId}`;
-    if (sessionStorage.getItem(storageKey)) {
+    if (this.playedIds.has(registrationId) || (typeof window !== 'undefined' && sessionStorage.getItem(storageKey))) {
       return { success: false, blocked: false, reason: 'already_played' };
     }
 
     // Stop any existing playback
     this.stopAudio();
 
-    // Mark as played in sessionStorage immediately
+    // Mark as played in memory and sessionStorage immediately
+    this.playedIds.add(registrationId);
     try {
       sessionStorage.setItem(storageKey, 'true');
     } catch {

@@ -20,11 +20,13 @@ export default function RegistrationSuccessModal({
   const [mounted, setMounted] = useState(false);
   const [showTapToHear, setShowTapToHear] = useState(audioBlocked);
   const [isPlayingManual, setIsPlayingManual] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const hasTriggeredRef = useRef(false);
 
-  // Exact attached sound file path
-  const audioSrc = '/audio/registration-success.wav';
+  // Sync prop changes
+  useEffect(() => {
+    if (audioBlocked) {
+      setShowTapToHear(true);
+    }
+  }, [audioBlocked]);
 
   // Ensure client-side portal mounting and lock background body scroll
   useEffect(() => {
@@ -32,109 +34,32 @@ export default function RegistrationSuccessModal({
     const originalOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
-    return () => {
-      document.body.style.overflow = originalOverflow;
-    };
-  }, []);
-
-  useEffect(() => {
-    // Only and only when this popup is shown on screen, and strictly only one time
-    if (hasTriggeredRef.current) return;
-    hasTriggeredRef.current = true;
-
-    // Strict one-time guarantee across renders and sessions
-    const storageKey = `illum_popup_audio_${registration.registration_id}`;
-    if (typeof window !== 'undefined' && sessionStorage.getItem(storageKey)) {
-      return;
-    }
-    try {
-      sessionStorage.setItem(storageKey, 'true');
-    } catch {
-      // Ignore private browsing storage restrictions
-    }
-
-    // Duck background music so voice confirmation is completely intelligible
-    window.dispatchEvent(
-      new CustomEvent('illuminate:voice-playback-start', {
-        detail: { registrationId: registration.registration_id },
-      })
-    );
-
-    // Play the attached sound exactly once
-    const playSound = async () => {
-      try {
-        // First try the Web Audio engine (zero latency, gesture pre-unlocked)
-        const result = await audioController.playRegistrationConfirmation(registration.registration_id);
-        if (result.blocked) {
-          // If Web Audio was blocked, try direct HTMLAudioElement
-          const audio = audioRef.current;
-          if (audio) {
-            audio.currentTime = 0;
-            audio.volume = 1.0;
-            audio.loop = false;
-            await audio.play();
-            setShowTapToHear(false);
-          } else {
-            setShowTapToHear(true);
-          }
-        }
-      } catch (err) {
-        console.warn('[Popup Audio] Playback blocked by browser policy:', err);
-        setShowTapToHear(true);
-      }
-    };
-
-    playSound();
-
-    // Listen for audio blocked events
+    // Listen for audio blocked events (e.g. if browser blocked auto-play)
     const handleBlocked = () => {
       setShowTapToHear(true);
     };
     window.addEventListener('illuminate:voice-playback-blocked', handleBlocked);
 
-    const audioEl = audioRef.current;
-
     return () => {
+      document.body.style.overflow = originalOverflow;
       window.removeEventListener('illuminate:voice-playback-blocked', handleBlocked);
       // Immediately stop audio when popup unmounts or leaves screen
       audioController.stopAudio();
-      if (audioEl) {
-        audioEl.pause();
-        audioEl.currentTime = 0;
-      }
-      window.dispatchEvent(
-        new CustomEvent('illuminate:voice-playback-end', {
-          detail: { registrationId: registration.registration_id },
-        })
-      );
     };
-  }, [registration.registration_id]);
+  }, []);
 
   // Stop and reset audio when popup closes
   const handleClose = () => {
     audioController.stopAudio();
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
-    }
     onClose();
   };
 
   const handleManualPlay = async () => {
     setIsPlayingManual(true);
     try {
-      const audio = audioRef.current;
-      if (audio) {
-        audio.currentTime = 0;
-        audio.volume = 1.0;
-        audio.loop = false;
-        await audio.play();
+      const result = await audioController.playManualFallback(registration.registration_id);
+      if (result.success) {
         setShowTapToHear(false);
-      } else {
-        const result = await audioController.playManualFallback(registration.registration_id);
-        if (result.success) {
-          setShowTapToHear(false);
-        }
       }
     } catch (err) {
       console.warn('[Popup Audio] Manual playback error:', err);
@@ -152,21 +77,6 @@ export default function RegistrationSuccessModal({
       aria-labelledby="modal-success-heading"
       style={{ isolation: 'isolate' }}
     >
-      {/* Attached one-time audio element */}
-      <audio
-        ref={audioRef}
-        src={audioSrc}
-        preload="auto"
-        loop={false}
-        onEnded={() => {
-          window.dispatchEvent(
-            new CustomEvent('illuminate:voice-playback-end', {
-              detail: { registrationId: registration.registration_id },
-            })
-          );
-        }}
-      />
-
       <div className="relative w-full max-w-lg p-8 sm:p-12 rounded-3xl border border-red-600/60 bg-[#0a0a0d] text-white shadow-[0_0_80px_rgba(220,38,38,0.35)] overflow-hidden text-center animate-modal-scale-fade my-auto z-10">
         {/* Ambient Crimson Glow */}
         <div className="absolute top-0 right-0 w-72 h-72 bg-red-600/15 rounded-full blur-3xl pointer-events-none" />

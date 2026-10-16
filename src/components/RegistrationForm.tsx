@@ -39,6 +39,7 @@ export default function RegistrationForm() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [duplicateField, setDuplicateField] = useState<'email' | 'phone' | null>(null);
   const [registeredData, setRegisteredData] = useState<Registration | null>(null);
+  const [isAudioBlocked, setIsAudioBlocked] = useState(false);
 
   // Synchronous submission lock to prevent rapid double-clicks
   const isSubmittingRef = useRef(false);
@@ -113,7 +114,11 @@ export default function RegistrationForm() {
       }
 
       // Backend confirmed database persistence!
-      // Display the registration success popup (which triggers the attached one-time sound on screen)
+      // Trigger confirmation voice recording immediately on successful backend response
+      const audioResult = await audioController.playRegistrationConfirmation(data.registration.registration_id);
+      setIsAudioBlocked(audioResult.blocked);
+
+      // Display the registration success popup
       setRegisteredData(data.registration);
       fireCelebration();
     } catch (err: unknown) {
@@ -129,6 +134,7 @@ export default function RegistrationForm() {
     // Stop and reset audio when closing confirmation
     audioController.stopAudio();
 
+    setIsAudioBlocked(false);
     setRegisteredData(null);
     setFormData({
       full_name: '',
@@ -392,6 +398,7 @@ export default function RegistrationForm() {
       <RegistrationSuccessModal
         registration={registeredData}
         onClose={resetForm}
+        audioBlocked={isAudioBlocked}
       />
     )}
   </>
