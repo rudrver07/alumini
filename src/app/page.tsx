@@ -9,7 +9,6 @@ import RequirementsSection from '@/components/RequirementsSection';
 import RegistrationSection from '@/components/RegistrationSection';
 import FAQSection from '@/components/FAQSection';
 import Footer from '@/components/Footer';
-import BackgroundAudio from '@/components/BackgroundAudio';
 
 export const metadata = {
   title: 'ILLUMINATE 2026 | Entrepreneurship Workshop by E-Cell, IIT Bombay',
@@ -57,9 +56,6 @@ export default function Home() {
 
       {/* Footer */}
       <Footer />
-
-      {/* Floating Ambient Soundtrack Controls */}
-      <BackgroundAudio />
     </div>
   );
 }
